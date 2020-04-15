@@ -81,6 +81,21 @@ struct sockaddr_storage{
 ![](pictures/地址族协议族3.jpg)
 ![](pictures/地址族协议族4.jpg)
 
+## 6. 各种函数
+### 6.1 `splice`(是一个零拷贝操作.)
+```C++
+#include<fcntl.h>
+ssize_t splice( int fd_in, loff_t* off_in, int fd_out, loff_t* off_out, size_t len, unsigned int flags);
+```
+> fd_in为要读取数据的描述符.如果其是管道,则off_in必须为NULL,如果不是管道描述符,则off_in表示从输入数据的何处开始读取数据.off_out则意义类似,用于输出描述符,len参数指定移动数据的长度,就是读多少个字节的数据.
+> * flag控制数据如何移动
+> `SPLICE_F_MOVE`:如果合适的话,按整页内存移动数据.
+> `SPLICE_F_NONBLOCK`:非阻塞的操作,实际受描述符的阻塞状态影响
+> `SPLICE_F_MORE`:给内核提醒,表示后续将移动更多数据.
+> `SPLICE_F_MORE`:没有效果.
+>
+> * `fd_in`和`fd_out`至少有一个需要是管道描述符.
+
 ### 服务器程序实例
 
 ```C++
@@ -466,3 +481,263 @@ void reset_oneshot{
 
 ![](pictures/三种IO复用.jpg)
 ### 非阻塞connect
+`EINPROGESS`: `errno` 在`connect`出错时的一种值.发生于对非阻塞`socket`调用`connect`;而连接又没有**立即建立**
+&emsp;此时可以用`select`和`poll`等来监听该`socket`的**可写事件.**返回后再利用`getsockopt`读取错误码,并清除错误.
+### ***聊天室程序*** ***处理网络连接和用户输入***
+```C++
+#define _GUN_SOURCE 1
+#include<sys/types.h>
+#include<sys/socket.h>
+#include<netinet/in.h>
+#include<arpa/inet.h>
+#include<assert.h>
+#include<stdio.h>
+#include<unistd.h>
+#include<string.h>
+#include<stdlib.h>
+#include<poll.h>
+#include<fcntl.h>
+
+
+#define BUFFER_SIZE 64
+int main(int argc, char* argv[])
+{
+	if( argc <= 2 ){
+		printf("usage : %s ip_address port_numer\n", basename(argv[0]));
+		return 1;
+	}
+	const char* ip = argv[1];//表示要连接的服务器的ip地址.
+	int port = atoi(argv[2]);//表示要连接的服务器的端口.
+	
+	struct sockaddr_in servaddr;
+	bzero(&servaddr, sizeof(servaddr));
+	servaddr.sin_family = AF_INET;
+	inet_pton(AF_INET, ip, &servaddr.sin_addr);
+	servaddr.sin_port = htons(port);
+	
+	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+	assert(sockfd > 0);
+	if( connect( sockfd, ( struct sockaddr* )&servaddr, sizeof( servaddr )) < 0 )
+	{
+		printf( "connection falied\n" );
+		close(sockfd);
+		return 1;
+	}
+
+	pollfd fds[2];
+	fds[0].fd = 0;              //标准输入描述符
+	fds[0].events = POLLIN;     //用于监控客户端键盘输入
+	fds[0].revents = 0;
+	fds[1].fd = sockfd;         //连接客户端描述符
+                                //用于监控客户端连接的数据传输
+	fds[1].events = POLLIN | POLLRDHUP;
+	fds[1].revents = 0;
+
+	char read_buf[BUFFER_SIZE];
+	int pipefd[2];
+	int ret = pipe(pipefd);//用于设置管道,1写0读.
+	assert( ret != -1 );
+
+	while(1)
+	{
+		ret = poll( fds, 2, -1 );//进行poll调用.
+		if( ret < 0 )
+		{
+			printf( "poll failure\n" );
+			break; 
+		}
+        //表示服务器端关闭了连接,即发送给客户端FIN信号.
+		if( fds[1].revents & POLLRDHUP )
+		{
+			printf( "server close the connection\n" );
+			break;	
+		}
+        //表示服务器端发送数据
+		else if( fds[1].revents & POLLIN )
+		{   //接收数据并打印至标准输出.
+			memset( read_buf, '\0', BUFFER_SIZE );
+			recv( fds[1].fd, read_buf, BUFFER_SIZE - 1, 0 );
+			printf("%s\n", read_buf);
+		}
+
+		if( fds[0].revents & POLLIN )//表示标准输入(键盘)有数据输入.
+		{   //从标准输入把数据移动至管道的输入.
+			ret = splice( 0, NULL, pipefd[1], NULL, 32768, SPLICE_F_MORE | SPLICE_F_MOVE );
+            //把管道的输出数据移动至已连接sockfd,即发送给服务器.
+			ret = splice( pipefd[0], NULL, sockfd, NULL, 32768, SPLICE_F_MORE | SPLICE_F_MOVE );
+		}
+			
+	}
+	close( sockfd );
+	return 0;
+}
+```
+
+### ***同时处理TCP和UDP***
+* 若要服务器监听多个端口,就需要对多个`socket`进行`bind`然后监听
+* 若要对同一个端口监听`UDP`和`TCP`,则需要创建`SOCK_STREAM`和`SOCK_DGRAM`两种`socket`,并且都绑定到该端口上.
+### ***超级服务xinetd***
+> 管理着多个子服务,监听多个端口.采用/etc/xinetd.conf主配置文件和/etc/xinetd.d目录下多个子配置文件.
+
+## **10. 信号**
+> 信号是,*系统,用户或者进程*发送给目标进程的信息.
+> **信号产生原因**
+> * 前台进程,用户输入*特殊字符*发送信号,如`CTRL+C`,
+> * 系统异常.如浮点异常和内存非法访问.
+>* 系统状态变化.例如`alarm`定时器到期引起`SIGALARM`信号.
+>* 运行`kill`命令或者`kill`函数.
+
+### 发送信号
+```C++
+#include<sys/types.h>
+#include<signal.h>
+int kill( pid_t pid, int sig );
+//成功返回0,否则-1并设置errno
+```
+> errno: EINVAL:无效信号; EPERM:无权限发给任何一个目标进程;ESRCH:目标进程或进程组不存在.
+* `pid > 0`:发给对应进程.
+* `pid = 0`:发送个进程组内的其他进程.
+* `pid = -1`:发送给除了`init`之外的所有进程.但发送者需要有发送的权限.
+* `pid < -1`:发送给组`ID`为`-pid`的组成员.
+### 信号处理方式
+> 在收到信号时,需要定一个函数来处理.原型:
+```C++
+#include<signal.h>
+typedef void (*__sighandler_t) (int);
+```
+* 只带有一个整形参数.表示要处理的信号.(信号处理函数是可重入的.)
+* 在头文件bits/signum.h中定义了两种信号处理方式:
+```C++
+#define SIG_DFL ((__sighandler_t) 0)
+#define SIG_IGN ((__sighandler_t) 1)
+```
+**与网络编程相关的几个信号**
+> `SIGHUP SIGPIPE SIGURG`
+
+### 中断系统调用
+运行阻塞系统调用时,收到信号,并且有对应的信号处理函数.则系统调用被中断,`errno`被设置为`EINTR`,
+
+### singal系统调用.
+```C++
+#include<signal.h>
+_sighandler_t signal( int sig, _sighandler_t _handler);
+```
+`sig`为信号类型,`_handler`为`_sighandler_t`类型函数指针,用于指定信号`sig`的处理函数.
+* 成功时返回指针,返回值是前一次调用`signal`函数传入的函数指针,或者是信号`sig`对应的默认处理函数指针`SIG_DEF`
+* 出错返回SIG_ERR,并设置`errno`,
+### singal系统调用.
+```C++
+#include<signal.h>
+int sigaction( int sig, struct sigaction* act, struct sigaction* oact);
+struct sigaction{
+#ifdef __USE_POSIX199309
+    union{
+        _sighandler_t sa_handler;
+        void (*sa_handler)(int, siginfo*, void*);
+    }_sigaction_handler;
+#define sa_handler _sigaction_handler.sa_handler
+#define sa_sigaction _sigaction_handler.sa_sigaction
+#else
+    _sighandler_t sa_handler;
+#endif
+    _sigset_t sa_mask;
+    int sa_flags;
+    void (*sa_restorer) (void);
+};
+```
+`sa_handler`指定信号处理函数.`sa_mask`**在进程原有的信号掩码上增加**信号掩码`sa_flags`设置程序收到信号时的行为.
+
+### 信号集
+```C++
+#include<bits/sigset.h>
+#define _SIGSET_NWORDS (1024 / (8 * sizeof (unsigned long int)))
+typedef struct{
+    unsigned long int __val[_SIGSET_NWORDS];
+}__sigset_t;
+```
+__sigset_t是一个长整型数组,每个整数的每一个位,表示一个信号.
+设置/修改/删除/查询信号 集合
+```C++
+#include<signal.h>
+int sigemptyset(sigset_t* _set);
+int sigfillset(sigset_t* _set);
+int sigaddset(sigset_t* _set, int _signo);
+int sigdelset(sigset_t* _set, int _signo);
+int sigismember(_const sigset_t* _set, int _signo);
+```
+```C++
+#include<signal.h>
+int sigprocmask( int _how, _const sigset_t* _set, sigset_t _oset);
+//成功0,否则-1并设errno
+```
+`_how`的种类:
+* `SIG_BLOCK`,新进程的信号掩码是当前值和_set信号的并集
+* `SIG_UNBLOCK`,新进程的信号掩码是当前值和~_set信号的交集,因此_set信号的都不屏蔽.
+* `SIG_SETMASK`,直接设置为_set.
+如果_set为NULL, 则原进程信号掩码不变,仍然可以利用_oset获得进程当前信号掩码.
+### 被挂起的的信号
+> 如果一个进程设置了信号掩码,则被屏蔽的信号不能被进程接收,内核将被屏蔽的信号设置为被挂起的信号,如果我们取消对被挂起信号的屏蔽,会立即接收到该信号.(但是只有一次.)
+```C++
+#include<signal.h>
+int sigpending( sigset_t* set);
+//获得当前进程被挂起的信号集
+```
+
+### 网络编程相关信号
+***SIGHUP***
+> 当挂起进程的控制终端时,SIGHUP信号被触发,而有些后台程序则利用SIGHUP信号来**强制服务器**重读配置文件.
+
+***SIGPIPE***
+> 默认情况下,往一个读端关闭的管道 或 socket连接中写数据会引发SIGPIPE信号,*我们需要在代码中捕获该信号*,或者至少忽略它,因为该信号的默认处理是结束进程.
+* 可以用send函数的MSG_NOSIGNAL来禁止触发SIG_PIPE信号.此时需要用errno来判断是否关闭读端.
+
+***SIGURG***
+> Linux下内核通知程序带外数据到来方式:
+> * I/O复用技术.select等函数在收到带外数据时将返回.并报告socket异常.
+> * 使用SIGURG信号
+
+## 定时器
+### `socket`选项`SO_RCVTIMEO`和`SO_SNDTIMEO`
+可以用来设置`socket`中接收数据和发送数据的超时时间.这两个`socket`选项仅对接收和发送相关的`系统调用`有关.
+![](pictures/超时选项的作用.jpg)
+```C++
+struct timeval timeout;
+ret = setsockopt( sockfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout) );
+```
+### SIGALARM信号.
+> 函数`alarm`和`setitimer`设置的实时闹钟一旦时间一到就会发出SIGALARM信号.
+
+**基于升序链表的定时器**
+
+> 定时器通常至少包含两个成员(其余可能传入参数/是否重启定时器等信息.)
+>* 超时时间
+>* 任务回调函数.
+>这里链表 用于串联定时器,则需要指向下一个定时器的指针,如果双向链表则还需包含前指针.
+
+**I/O复用系统调用的超时参数**
+可以同时处理信号和I/O事件.还可以统一处理定时事件
+但是I/O函数可能在超时之前就返回,因此需要不断更新定时参数以反映剩余时间.
+
+**高性能定时器:时间轮**
+![](pictures/时间轮.jpg)
+* 恒定速度顺时针.
+* 每次转动为一个滴答.一个滴答称为时间轮的槽间隔si.实际就是心博时间.运转一周时间为N*si,
+* 每个时间槽指向一条链表.链表上的定时器时间相差N*si,
+> 单个时间轮精度可能不高,因为高精度需要十分小的si,高效率则要足够大的N,
+
+**时间堆**
+利用最小堆的方式,堆顶的定时长度是最小的,用其作为定时长度,当定时到,堆顶事件定时事件一定被执行.
+
+
+## 高性能I/O框架库Libevent
+服务器程序需要处理的三类事件:
+* I/O事件,信号和定时事件.
+处理这三位问题需要考虑以下三个问题:
+* 统一事件源:使代码简单;避免潜在逻辑错误.
+* 可移植性
+* 对并发编程的支持.
+### libevent特点
+* 跨平台
+* 统一事件源
+* 线程安全
+* 基于Reactor
