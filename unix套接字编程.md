@@ -1,5 +1,5 @@
 ### 3.1 tcp状态变迁:
-> ![](pictures/tcp状态变迁.jpg)
+ ![](pictures/tcp状态变迁.jpg)
 ### 3.2 ipv4套接字地址结构
 > ![](pictures/ipv4套接字地址结构.jpg)
 ### 3.3 ipv6套接字地址结构
