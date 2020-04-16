@@ -741,3 +741,105 @@ ret = setsockopt( sockfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout) );
 * 统一事件源
 * 线程安全
 * 基于Reactor
+### libevent库
+
+![](pictures/IO框架库时序.jpg)
+![](pictures/IO框架库组件.jpg)
+
+***主要逻辑***
+1. event_init函数创建event_base对象.event_base对象相当于一个Reactor实例.
+2. 创建具体的事件处理器.**并设置他们所从属的**Reactor实例.evsignal_new和evtimer_new分别用于创建信号事件和定时器事件处理器.(定义在include/event2/event.h中的宏)
+    ```C++
+    #define evsignal_new( b, x, cb, arg) event_new( (b), (x), EV_SIGNAL | EV_PERSIST, (cb), (arg))
+    #define evtimer_new( b, cd, arg) event_new( (b), (-1), 0, (cb), (arg))
+    //event_new定义:
+    struct event* event_new( struct event_base* base, evutil_socket_t fd, short events, void (*cb)(evutil_socket_t, short, void*), void* arg);
+    ```
+* base指定新创建的事件处理器的从属的Reactor,
+* fd指定该事件处理器关联的句柄.当处理IO时,fd为文件描述符,处理信号时,fd为信号值.定时器事件时,fd为-1,
+* events指定事件类型:
+    ```C++
+    #define EV_TIMEOUT 0x01 /* 定时事件 */
+    #define EV_READ 0x02    /* 可读事件 */
+    #define EV_WRITE 0x04   /* 可写事件 */
+    #define EV_SIGNAL 0x08  /* 信号事件 */
+    #define EV_PERSIST 0x10 /* 永久事件 */ /* 事件被触发之后,自动重新对这个event调用event_add函数 */
+
+    #define EV_ET 0x20//需要I/O复用系统支持如epoll
+    ```
+* cb为目标事件对应回调函数,相当于事件处理器中的handler_event方法.
+3. 调用event_add函数,将事件处理器添加到注册事件队列中.并将该事件处理器对应的事件添加到事件多路分发器中.`event_add`方法相当于`Reactor`中的`register_handler`方法.
+4. 调用`event_base_dispatch`函数来执行事件循环.
+5. 事件循环结束后,使用*_fress系列函数来资源.
+### event结构体
+```C++
+struct event{
+    TAILQ_ENTRY(event) ev_active_next;
+    TAILQ_ENTRY(event) ev_next;
+    union{
+        TAILQ_ENTRY(event) ev_next_with_common_timeout;
+        int min_heap_idx;
+    } ev_timeout_pos;
+    evutil_socket_t ev_fd;
+
+    struct event_base* ev_base;
+
+    union{
+        struct {
+            TAILQ_ENTRY(event) ev_io_next;
+            struct timeval ev_timeout;
+        } ev_io;
+
+        struct {
+            TAILQ_ENTRY(event) ev_signal_next;
+            short ev_ncalls;
+            short *ev_pncalls;
+        } ev_signal;
+    } _ev;
+
+    short ev_events;         
+    short ev_res;               
+    short ev_flags;
+    ev_uint8_t ev_pri;
+    ev_uint8_t ev_closure;
+    struct timeval ev_timeout;
+    
+    void (*ev_callbak)(evutil_socket_t, short , void *arg);
+    void *ev_arg;
+};
+```
+* `ev_events` 代表事件类型,上述事件按位或(排斥类型无法或.)
+* `ev_next` 所有已注册的事件处理器通过该成员串联成一个尾队列,称之为注册事件队列.宏TAILQ_ENTRY:
+    ```C++
+    #define TAILQ_ENTRY(type)
+    struct {
+        struct type* tqe_next;
+        struct type** tqe_prev;
+    }
+    ```
+* `ev_active_next` 所有被激活的事件处理器通过该成员串联成一个尾队列.称为活动事件队列.不同优先级的事件处理器激活后,被插入不同的活动事件队列中.事件循环中,Reactor将从高到低优先级遍历所有活动事件队列,并处理其中的事件处理器(event)
+* `ev_timeout_pos` 联合体,仅用于定时事件处理器.(后称定时器.)`ev_next_with_common_timeout`指出了该定时器在`通用定时器队列`的位置.
+* `_ev`是一个联合体,具有相同`fd`的`I/O事件处理器`通过`_ev.ev_io.ev_io_next`成员串成一个尾队列.称为I/O事件队列;则具有相同`fd`的`信号事件处理器`通过`_ev.ev_signal.ev_signal_next`串成一个尾队列.称为信号事件队列.
+`_ev.ev_signal.ev_ncalls`指定当指定信号事件发生时,Reactor需要执行多少次该事件处理器中对应的回调函数.
+`_ev.ev_signal.ev_pncalls`要么是NULL,要么指向上面按个ncall;
+&emsp;程序中一个socket文件描述符,可能创建多个事件处理器(有不同的回调函数.),当该fd上有可读/可写事件时,所有的对应事件处理器都会被处理.就串到了同一个fd的信号事件队列上.
+* ev_fd 对于I/O它是文件描述符,对于信号他是信号值.
+* ev_base 本处理器从属的event_base实例.
+* ev_res 记录当前事件激活的类型(应该跟ev_events一样也是事件类型按位或)
+* ev_flags 事件标志,定义在`include/event2/struct.h`
+    ```C++
+    #define EVLIST_TIMEOUT 0x01 /* 处理器从属于定时器队列或时间堆 */
+    #define EVLIST_INSERTED 0x02 /* 处理器从属于注册事件队列 */
+    #define EVLIST_SIGNAL 0x04 /* 没有使用 */
+    #define EVLIST_ACTIVE 0x08 /* 处理器从属于活动事件队列 */
+    #define EVLIST_INTERNAL 0x10 /* 内部使用 */
+    #define EVLIST_ALL (0xf000 | 0x9f) /* 定义所有标志 */
+    ```
+* ev_pri 处理器优先级.越小优先级越高.
+* ev_closure 指定event_base执行处理器的回调函数时的行为,值:
+    ```C++
+    #define EV_CLOSURE_NONE 0       /* 默认行为 */
+    #define EV_CLOSURE_SIGNAL 1     /* 处理回调函数时,调用_ev.ev_signal.ev_ncalls次 */
+    #define EV_CLOSURE_PERSIST 2    /* 执行完回调函数再次将其加入注册事件队列 */
+
+    ```
