@@ -843,3 +843,36 @@ struct event{
     #define EV_CLOSURE_PERSIST 2    /* 执行完回调函数再次将其加入注册事件队列 */
 
     ```
+
+
+
+## 多进程编程.
+### fork函数
+```C++
+#include<unistd.h>
+pid_t fork(void);
+```
+> `fork()`特性:返回两次,在父进程中返回一次,返回子进程的pid,子进程中又返回一次,返回0;
+> **原因:** 任何子进程只有一个父进程,调用`getppid`即可获得父进程pid,而父进程却可能有多个子进程,需要返回子进程的`pid`以便跟踪
+> ***重点的重点:*** 父进程中调用`fork()`之前打开的所有描述符即`sockfd`在`fork()`之后由子进程分享.通常情况:子进程中继续对该`sockfd`进行读写,而父进程关闭该`sockfd`;**每个sockfd**都有**引用计数**,当计数为零时才关闭`sockfd`
+
+***异同部分***:
+> * 堆指针,栈指针,和标志寄存器相同
+> * 子进程ppid被重新设置,信号位图被清除.原进程设置的信号处理函数不再对子进程起作用.
+> * 子进程代码和父进程完全相同.还会**复制父进程的数据**(写时复制),(在父/子进程对数据进行写操作时,才会分配内存并复制父进程的数据.)
+> 父进程的用户根目录,当前工作目录等变量引用计数都加一
+### exec函数
+![](pictures/exec函数.jpg)
+### 处理僵尸进程
+`wait`和`waitpid`函数
+```C++
+#include<sys/types.h>
+#include<sys/wait.h>
+pid_t wait(int * stat_loc);
+pid_t waitpid(pid_t pid, int* stat_loc, int options);
+```
+`wait`为阻塞,`waitpid`非阻塞.`stat_loc`为参数-值类型
+`wait`返回结束的子进程的`pid`,`stat_loc`可以用下列宏进行查看
+![](pictures/子进程状态信息.jpg)
+`waitpid`的`options`通常用宏`WNOHANG`指定为非阻塞状态,返回0表示没有子进程结束或终止.返回非零值表示返回值的`pid`的子进程终止了.参数`pid`如果为-1表示等待任意一个子进程.
+通常发生`SIGCHLD`信号时(需要捕获,即设置信号处理函数.),调用非阻塞`waitpid`进行处理.
