@@ -876,3 +876,229 @@ pid_t waitpid(pid_t pid, int* stat_loc, int options);
 ![](pictures/子进程状态信息.jpg)
 `waitpid`的`options`通常用宏`WNOHANG`指定为非阻塞状态,返回0表示没有子进程结束或终止.返回非零值表示返回值的`pid`的子进程终止了.参数`pid`如果为-1表示等待任意一个子进程.
 通常发生`SIGCHLD`信号时(需要捕获,即设置信号处理函数.),调用非阻塞`waitpid`进行处理.
+### 管道
+管道能在父子进程间进行通讯. **利用fork之后共享的两个管道文件描述符**
+> 在用`pipe`函数时一对管道只能保证父子间的一个单向传输.比如*父关闭fd[0],子关闭fd[1]*
+> 调用`socketpair`时,可以创建全双工管道.
+
+### 信号量
+类似操作系统中的PV操作.
+![](pictures/PV操作.jpg)
+所有的信号量`API`都在`sys/sem.h`中.被设计成**操作一组信号量**,因此接口稍微比较复杂.
+#### semget系统调用
+```C++
+#include<sys/sem.h>
+int semget(key_t key, int num_sems, int sem_flags);
+```
+> * `key`是键值,表示唯一的信号量**集合**,创建或者获取该集合.
+> * `num_sems`指定创建的**信号量的数目**,如果是获取已存在的,则为0
+> * `sem_flags`指定一组标志.低端9个比特为该信号量的权限.**格式和含义都和`open`的`mode`参数相同.
+> * 成功时返回一个正整数,是信号量集合.失败返回-1并设置errno
+
+#### semop系统调用
+
+
+#### semctl
+
+#### 特殊值IPC_PRIVATE
+
+
+### 共享内存函数API
+定义在`sys/shm.h`
+共有`shmget`,`shmat`,`shmdt`,`shmctl`四个函数.
+> * `shmget`创建或获取一段新的共享内存.
+> * `shmat`和`shmdt`关联到进程的地址空间和从进程地址空间分离.
+> * `shmctl`控制共享内存的属性.
+
+### 消息队列
+定义在`sys/msg.h`
+共有`msgget`,`msgsnd`,`msgrcv`,`msgctl`四个函数.
+> * `msgget`创建或获取一个消息队列
+> * `msgsnd`把消息添加到消息队列中.
+> * `msgrcv`从消息队列获取消息.
+> * `msgctl`控制消息队列某些属性
+
+
+### IPC命令
+> * 用ipcs查看共享资源的情况.
+> * 用ipcrm删除遗留在系统中的共享资源.
+
+
+### 在进程间传递描述符.
+
+
+## 多线程编程
+
+### 概念
+> 线程是完整执行序列.是可调度实体..*一般分为用户级线程和内核级线程*
+> 当内核线程获得CPU使用权之后,装载一个用户线程运行.
+> 则因此**进程内用户级线程数量N大于等于内核级线程数量M**
+
+### 线程实现方式:
+* 完全在用户空间实现.**N = 1**线程库负责管理所有线程.
+* 完全由内核调度.:M:N = 1:1,一个用户空间线程被映射为一个内核空间线程.
+* 双层调度:上述两个综合体,结合了优势.
+
+### 线程库
+`NPTL`当前主流线程库.
+1. `pthread_create`
+```C++
+#include<pthread.h>
+int pthread_create(pthread_t* thread, const pthread_attr_t* attr, void* (*start_routine)(void*),void* arg);
+```
+* `thread`是新线程标识符.后续`pthread_*`函数通过它来引用新线程.
+* `pthread_t`定义:#include<bits/pthreadtypes.h>&emsp;typedef unsigned long int pthread_t;
+* attr用于设置属性.
+* start_routine指定新线程运行的函数和参数.
+
+2. `pthread_exit`
+```C++
+#include<pthread.h>
+void pthread_exit( void* retval);
+```
+* 通过retval向**线程的回收者**传递其退出信息.执行完之后不返回调用者.永远不会失败.
+
+3. `pthread_join`
+```C++
+#include<pthread.h>
+int pthread_join( pthread_t thread, void** retval );
+```
+* **所有线程**都可以调用它来回收其他线程**前提是可回收**
+* `thread`要回收的目标线程,`retval`是目标线程的退出信息.
+* 该函数是阻塞函数.一直到目标线程退出为止.
+* 成功返回0,失败错误码:<br>1. `EDEADLK`死锁,(两个线程互相针对对方调用`pthread_join`,或对自身调用`pthread_join`)<br>2. `EINVAL`目标线程不可回收或者其他线程正在回收该线程.<br>3. `ESRCH`目标线程不存在.
+
+3. `pthread_cancel`
+```C++
+#include<pthread.h>
+int pthread_cancel( pthread_t thread );
+```
+* 成功返回0否则错误码,而接收到取消请求的线程可以自行决定**是否取消**及**如何取消**
+```C++
+#include<pthread.h>
+int pthread_setcancelstat( int stat, int *oldstat );//stat设置取消状态即是否取消
+int pthread_setcanceltype( int type, int *oldstat );//type设置如何取消,取消种类.
+```
+* `stat`参数:<br>1. `PTHREAD_CANCEL_ENABLE`(线程被创建时默认状态)<br>2. `PTHREAD_CANCEL_DISABLE`接收到请求,将请求挂起直到允许被取消
+* `type`<br>1. `PTHREAD_CANCEL_ASYNCHRONOUS`随时可以取消,接受到请求立即取消.<br>2. `PTHREAD_CANCEL_DEFERRED`推迟行动.直到**它**调用了以下**取消点函数**之一:`pthread_join`,`pthread_testcancel`,`pthread_cond_wait`,`pthread_cond_timedwait`,`sem_wait`,`sigwait`;
+
+### 线程属性
+```C++
+#include<bits/pthread_types.h>
+#define __SIZEOF_PTHREAD_ATTR_T 36
+typedef union
+{
+    char __size[__SIZEOF_PTHREAD_ATTR_T];
+    long int __aligh;
+} pthread_attr_t;
+```
+* 线程库设置了一系列函数进行对`pthread_attr_t`进行操作的函数.
+```C++
+#include<pthread.h>
+int pthread_attr_init( pthread_attr_init* attr );
+int pthread_attr_destory( pthread_attr_init* attr );
+//线程属性对象创建和消失
+//下面都是获得属性对象的某个属性 或 设置属性对象的某个属性.
+...不赘述了,稍微说一下线程属性对象有哪些属性吧
+```
+* `detachstate`脱离状态,有`PTHREAD_CREATE_JOINABLE`和`PTHREAD_CREATE_DETACH`,表示**可回收**和**脱离同步**两个状态.
+* `stackaddr`和`stacksize`线程堆栈的起始地址和大小
+* `guardsize`保护区域.为了使线程堆栈不被错误覆盖.在尾部额外分配的`guardsize`字节的空间.
+* `schedparam`调度参数.是`sched_param`结构体,目前只有一个整形变量`sched_priority`,表示运行优先级.
+* `schedpolicy`,线程调度策略,有`SCHED_FIFO`,`SCHED_RR`和`SCHED_OTHER`表示先进先出调度算法和轮转算法和其他算法(这个是默认值.)<br>前两种都能够用于线程实时调度,但只能超级身份运行的进程.
+* `inheritsched`是否继承调用线程的**调度属性**,
+* `SCOPE`线程间竞争CPU的范围.
+
+
+### POSIX信号量
+**信号量**和**互斥量**和**条件变量**是专门用于线程同步的机制.
+常用信号量函数:
+```C++
+#include<semaphore.h>
+int sem_init( sem_t* sem, int pshared, unsigned int value );
+int sem_destory( sem_t* sem );
+int sem_wait( sem_t* sem );
+int sem_trywait( sem_t* sem );
+int sem_post( sem_t* sem );
+```
+* `pshared`指明信号量的类型:`0`为局部信号量,不共享,`value`指定该信号量的初始值.**全是不可预期的结果**:**初始化一个已经被初始化的信号量**
+* `destory`销毁一个信号量.**全是不可预期的结果**:**销毁一个已经被销毁的信号量**
+* `wait`以**原子操作**的形式将信号量的值`-1`,如果信号量值为零,则将被阻塞,直到信号量非零为止.
+* `trywait`相当于`waitpid`了
+* `sem_post`以原子操作的方式,将信号量`+1`,当信号量值大于0时,将唤醒其他正在`wait`的线程.
+
+### 互斥锁
+```C++
+#include<pthread.h>
+int pthread_mutex_init( pthread_mutex_t* mutex, const pthread_mutexattr_t* mutexattr );
+//第一个是将mutex设置为attr对应的属性.
+//可以用pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;进行初始化,每一项都设为零.
+int pthread_mutex_destory( pthread_mutex_t* mutex );
+int pthread_mutex_lock( pthread_mutex_t* mutex );
+//以原子操作方式给一个互斥锁加锁.
+int pthread_mutex_trylock( pthread_mutex_t* mutex );
+//非阻塞版本,成功0,不成功返回EBUSY
+int pthread_mutex_unlock( pthread_mutex_t* mutex );
+//解锁,如果有其他线程在等待,其中一个将会获得这个锁(到底哪一个呢)
+//上述成功都0,否则错误码
+```
+#### 互斥锁属性
+```C++
+#include<pthread>
+int pthread_mutexattr_init( pthread_mutexattr_t* attr);
+int pthread_mutexattr_destory( pthread_mutexattr_t* attr);
+int pthread_mutexattr_getpshared( const pthread_mutexattr_t* attr, int* pshared );
+int pthread_mutexattr_setpshared( pthread_mutexattr_t* attr, int* pshared );
+int pthread_mutexattr_gettype( const pthread_mutexattr_t* attr, int* type );
+int pthread_mutexattr_settype( pthread_mutexattr_t* attr, int* type );
+```
+* `pshared`决定是否允许互斥锁**跨进程共享**,`PTHREAD_PROCESS_SHARED`和`PTHREAD_PROCESS_PRIVATE`
+* `type`指定类型,<br>1. `PTHREAD_MUTEX_NORMAL`普通锁,将形成等待队列.按优先级获得解锁的锁.<br>*同个线程如果对加锁的锁加锁,会死锁;对其他线程加锁的锁解锁或对已经解锁的普通锁解锁.会导致不可预期的后果*<br>2.`PTHREAD_MUTEX_ERRORCHECK`检错锁<br>*如果对加锁的检测所加锁,返回`EDAEDLOCK`,加锁其他线程加锁的锁或解锁已解锁的锁返回`EPERM`*<br>3. `PTHREAD_MUTEX_DEFAULT`默认锁.<br>对*已加锁的默认锁再加锁*,对*其他线程加锁的锁解锁*,对*解锁的锁解锁*都会有不可预期的结果.
+
+#### 互斥锁带来的问题
+**死锁**
+
+
+### 条件变量
+#### 相关函数:
+```C++
+#include<pthread.h>
+int pthread_cond_init( pthread_cond_t* cond, const pthread_condattr_t* attr );
+int pthread_cond_destory( pthread_cond_t* cond );
+int pthread_cond_broadcast( pthread_cond_t* cond );
+int pthread_cond_signal( pthread_cond_t* cond );
+int pthread_cond_wait( pthread_cond_t* cond, pthread_mutex_t* mutex );
+//wait前,先把线程放到等待队列中,然后解锁mutex,当wait返回时,mutex被锁上.
+```
+设计原则都跟上面的mutex差不多.
+
+### 多线程环境带来的设计注意点.
+#### 可重入函数
+> 多线程中一定要使用可重入函数,.Linux库函数大部分都可重入.为小部分不可重入提供了可重入版,一般带`_r`后缀.
+#### 进程和线程
+> `fork`,线程`fork`之后,只带有该线程的完整复制.并子进程继承父进程中互斥锁/(条件变量也类似).**子进程无法知道互斥锁状态**,而且从父进程继承的锁有可能被其他线程锁了.如果再次加锁就产生死锁.
+> * `pthread`提供了专门的函数
+    ```C++
+    int pthread_atfork( void(*prepare)(void), void(*parent)(void), void(*child)(void) );
+    ```
+    建立三个`fork`**句柄**,**清理互斥锁状态**
+> * `prepare`锁住所有父进程的互斥锁.
+> * `parent`在`fork`创建子进程之后,*在`fork`返回之前(这怎么做到的?)在**父进程**中执行,释放所有在`prepare`中被锁住的部分锁.
+> * `child`在`fork`返回之前在**子进程**中执行,释放所有在`prepare`中被锁住的锁
+#### 信号和线程
+```C++
+//信号掩码的线程版本
+int pthread_mask( int how, const sigset_t* newmask, sigset_t* oldmask);
+```
+线程库根据信号掩码决定信号发送给某些线程.进程中的**所有线程**共享该进程的信号.**所有线程**共享信号处理函数.
+因此,采用其中一个线程调用`sigwait( const sigset_t* set, int* sig )`等待具体信号,收到信号后将其分发给指定线程`int pthread_kill( pthread_t thread, int sig )`
+//上述`sig`存储等待到的`set`中某一个信号值.
+//设置了`sigwait`之后,就不应该**为该信号**设置信号处理函数,也就是说可以为其他信号设置.
+
+
+
+## 进程池和线程池
+* 动态创建线程/进程耗费时间.
+* 进程/线程切换耗费时间
+* 子进程时父进程的完整映像,因此需要注意资源的分配.
+> * 仅以进程池为例(线程池类似.)
