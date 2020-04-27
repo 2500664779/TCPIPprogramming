@@ -193,9 +193,9 @@ MySQL仅支持正则表达式中的很小一个子集.
 ### 聚集函数可以被组合
 即相当于`SELECT name1, name2`中`name1`和`name2`被采用了聚集函数.
 
-## 分组数据
+## 13. 分组数据
 分组能够把数据**分成**多个组,每个组进行不同的操作如上一章说的聚集计算
-### 创建分组
+### 13.1 创建分组
 在`SELECT`语句中的`GROUP BY`建立,
 例如:`SELECT name1, COUNT(*) AS num_name1 FROM table GROUP BY name1;`
 > 这里的逻辑,原本的`SELECT`是对table中的所有数据当做一组内容进行操作.在使用了`GROUP BY`之后,相当于`name1`中进行分组排序,然后对`name1`中的每一组进行`SELECT`后的操作.
@@ -205,9 +205,127 @@ MySQL仅支持正则表达式中的很小一个子集.
 > * 除聚集计算语句外，`SELECT`语句中的每个列都必须在`GROUP BY`子 句中给出
 > * 如果分组列中具有`NULL`值，则`NULL`将作为一个分组返回。如果列 中有多行`NULL`值，它们将分为一组。 
 > * `GROUP B`Y子句必须出现在WHERE子句之后，`ORDER BY`子句之前
-### 过滤分组
+### 13.2 过滤分组
 **注意这里过滤的是分组**,`WHERE`过滤的是行
 例子:`SELECT name, COUNT(*) AS num_name1 FROM table GROUP BY name1 HAVING COUNT(*) >= 2;`
-### SELECT子句顺序
+### 13.3 SELECT子句顺序
 ![](pictures/SELECT子句顺序1.jpg)
 ![](pictures/SELECT子句顺序2.jpg)
+
+## 14. 子查询
+***嵌套在其他查询里面的查询***
+相当于联合查询.即使用了之前的查询结果.
+
+### 14.1利用子查询进行过滤
+比如说想要查询:买了A物品的人的名字叫什么
+* 首先查询有A物品的订单的订单号
+* 然后根据所得的订单号查询对应的人名
+
+`SELECT order_num FROM orders WHERE item = 'A';`,比如说查询的结果为:
+
+ordername|
+--|:--
+10001|
+10005|
+则根据订单号`10001`和`10005`查询对应的人名(订单编号和人名对应)
+`SELECT name FROM names WHERE order_num IN (10001,10005);`
+则可以进行嵌套:
+`SELECT name FROM names WHERE order_num IN (SELECT order_num FROM orders WHERE item = 'A');`
+**理论上可以无线嵌套,但是性能上来说,次数不要太多为好**
+
+### 14.2 作为计算字段使用子查询
+> 假设需要显示`customer`表中,每个客户的订单总数,订单与相应的客户`ID`存储在`order`s表中.
+> * 从`customer`表中检索客户列表
+> * 对于检索出的客户,统计其在`orders`表中的订单数目.
+```MySQL
+SELECT cust_name,
+       cust_state,
+       (SELECT COUNT(*)
+       FROM orders
+       WHERE orders.cust_id = customers.cust_id) AS orders
+FROM customers
+ORDER BY cust_name;
+```
+带点的为完全限定名,排除可能的多义性,而**这种涉及外部查询的子查询叫做相关子查询**
+
+## 15 联结表
+最强大功能之一:**在数据检索查询的执行中联结表**
+
+### 15.1 关系表
+减少相同的数据出现的次数.**通过某些常用的值互相关联**的多个表叫做关系表.
+**外键的概念:** 外键是某个表中的一列,包含了另一个表的 **主键值**
+```
+SELECT vend_name, prod_name, prod_price
+FROM vendors, products 
+WHERE vendors.vend_id = products.vend_id
+ORDER BY vend_name, prod_name;
+```
+这里`vendors`只包含了供应商的信息,而`products`只包含了产品的信息和对应的供应商的信息.
+现在来看`FROM`子句。与以前的`SELECT`语句不一样，这条语句的`FROM`子句列出了两个表，分别是`vendors`和`products`。它们就是这条`SELECT`语句联结的两个表的名字。这两个表用`WHERE`子句正确联结，`WHERE`子句指示`MySQL`匹配`vendors`表中的`vend_id`和`products`表中的`vend_id`。 
+**应该保证所有联结都有WHERE子句**
+### 15.2 内部联结
+**基于两个表之间的相等测试**,对于如下语句跟`15.1`中返回的结果完全相同:
+```
+SELECT vend_name, prod_name, prod_price
+FROM vendors INNER JOIN products 
+ON vendors.vend_id = products.vend_id;
+```
+
+### 15.3 联结多个表
+**列出所有的表,在`WHERE`中定义表之间的关系**
+利用联结改写14章中自己举的例子:*买了A物品的人的名字叫什么*
+```
+SELECT name 
+FROM names, orders 
+WHERE orders.order_num = names.order_num
+ORDER BY name;
+```
+将子查询变换成了联结.
+
+## 16. 创建高级联结
+主要是介绍其他类型的联结(跟15章中的内部联结不同),然后如何对被联结的表使用**表别名**和**聚集函数**
+给表名取别名的原因:
+* 缩短语句
+* 允许在单条`SELECT`语句中多次使用相同的表.
+
+### 16.1 自联结
+假如你发现某物品(其ID为DTNTR)存在问题，因此想知道生产该物品的供应商生产的其他物品是否也存在这些问题.此查询要求首先找到生产ID为DTNTR的物品的供应商,然后找出这个供应商生产的其他物品.下面是解决此问题的一种方法：
+```
+SELECT prod_id, prod_name
+FROM products 
+WHERE vend_id = (SELECT ven_id
+                 FROM products 
+                 WHERE prod_id = 'DTNTR');
+```
+使用自联结:
+```
+SELECT p1.prod_id, p1.prod_name
+FROM products AS p1, products AS p2
+WHERE p1.vend_id = p2.vend_id
+    AND p2.prod_id = 'DTNTR';
+```
+自联结的意思就是自己跟自己联结呗.
+### 16.2 自然联结
+对表进行联结的条件:**需要只要一个列出现在不止一个表中**,才能进行联结.也很好理解.
+标准联结返回所有数据,甚至相同的列出现多次,**自然联结**排除多次出现.
+### 16.3 外部联结
+联结的本质:**一个表中的某一行和另一个表中的某一行关联**
+外部联结是**需要包含没有关联的那些行**例如:
+* 对每个客户下的订单数量进行计数.包括那些还未下订单的.
+```
+SELECT customers.cust_id, orders.cust_id
+FROM customers LEFT OUTER JOIN orders
+ ON customers.cust_id = orders.cust_id; 
+```
+关键词:**`LEFT OUTER JOIN`**
+在使用`OUTER JOIN`语法时，必须使用`RIGHT`或`LEFT`关键字指定包括其所有行的表（`RIGHT`指出的是`OUTER JOIN`右边的表，而`LEFT`指出的是`OUTER JOIN`左边的表）。上面的例子使用`LEFT OUTER JOIN`从`FROM`子句的左边表（`customers`表）中选择所有行。为了从右边的表中选择所有行，应该使用`RIGHT OUTER JOIN`
+### 16.4 带聚集函数的联结
+```
+SELECT customers.cust_name,
+       customers.cust_id,
+       COUNT(orders.ordernum) AS num_ord
+FROM customers INNER JOIN orders
+ ON customers.cust_id = orders.cust_id
+GROUP BY customers.cust_id;
+```
+## 17. 
