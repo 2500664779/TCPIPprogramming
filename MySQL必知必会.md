@@ -133,7 +133,7 @@ MySQL仅支持正则表达式中的很小一个子集.
 ### 10.2 拼接字段
 假如`table`表有`name1`,`name2`两个列.假如要生成一个报表.需要在`name1`中按照`name1(name2)`的格式进行生成.
 **拼接**将值连到一起,构成单个值,相当于构建了`name3`就等于`name1(name2)`
-**使用方法**:Contac()函数;
+**使用方法**:Contact()函数;
 > ***多数DBMS使用`+`或者`||`来实现拼接.而MySQL使用`Contact()`***
 
 **例子**
@@ -328,4 +328,287 @@ FROM customers INNER JOIN orders
  ON customers.cust_id = orders.cust_id
 GROUP BY customers.cust_id;
 ```
-## 17. 
+***
+## 17. 组合查询
+之前一条语句就用了一个`SELECT`,但是也支持使用多个`SELECT`,通过在多条`SELECT`语句中添加`UNION`关键字;
+例如:在数据库中查找名字叫做`A`或者年级大于`20`的人:
+`SELECT name, age FROM table WHERE name = 'A';`
+`SELECT name, age FROM table WHERE age > 20;`
+使用`UNION`进行联合:
+```
+SELECT name, age FROM table WHERE name = 'A'
+UNION
+SELECT name, age FROM table WHERE age > 20
+```
+**需要注意的点:**
+* `UNION`前后的`SELECT`都必须有相同的列(数量,和名称),列顺序不做要求,
+* `UNION`达到的效果,通常可以在`WHERE`中添加多个`OR`达到.
+* 第一条所说的列,也可以是表达式或者是聚集函数(但是都需要保证**相同**)
+* 列数据必须兼容:(相同或者`DBMS`可以隐式转换)
+
+### 包含或取消重复的行
+怎么理解:上一点如果名字为`A`的人刚好也大于`20`岁,则`UNION`前后的结果中都会包含`A`这条记录.
+`UNION`默认删除重复行.如果不想删除则使用`UNION ALL`;
+### 对UNION结果排序
+只能在最后的一个`SELECT`后跟`ORDER BY`
+
+## 18. 全文本搜索
+**`MyISAM`支持全文本搜索,而`InnoDB`不支持**
+通过`LIKE`也可以进行全文搜索例如 `LIKE '%rabbit%'`,但是
+* 这种为**非索引**搜索,需要对所有行进行匹配测试
+### 启用全文搜索:
+> 通常在创建表的时候`CREATE TABLE`接收`FULLTEXT`子句:
+![](pictures/全文本搜索.jpg)
+> * 根据`FULLTEXT`指示对包含的列进行索引
+> * 可以包含多个列.
+> * MySQL自动维护更新该索引.
+> * 可以在创建表时指定`FULLTEXT`也可以稍后指定.
+### 进行全文本搜索.
+使用:`Match(), Against()`进行全文本搜索.
+>* `Match()`指定被搜索的列
+>* `Against()`指定要搜索的表达式.
+实例:`SELECT note_text FROM productnotes WHERE Match(note_text) Against('rabbit');`
+>* 传递给`Match()`的值必须跟`FULLTEXT`中定义的相同,如果使用多个列,则顺序必须相同.
+>* 搜索不区分大小写
+
+**使用`Match(), Against()`有匹配的等级,返回的结果按照匹配的等级进行排序**
+```
+SELECT note_text 
+       Match(note_text) Against('rabbit') AS rank
+FROM productnotes;
+```
+### 使用查询扩展
+**放宽返回的全文本搜索的范围**类似于模糊查询,但又不太像
+![](pictures/查询扩展.jpg)
+例如使用查询扩展:
+```
+SELECT note_text 
+FROM productnotes
+WHERE Match(note_text) Against('rabbit' WITH QUERY EXPANSION);
+```
+> 假设返回了三行,仅有一行包含`rabbit`,第二行和第三行则出现了第一行中出现的其他词,不过匹配度不同.
+> * 查询的结果跟表中的行有有关:**行越多,查询结果越好**
+### 布尔文本搜索
+指定的方式:
+> * 要匹配的词
+>* 要排斥的词
+>* 排列提示(如指定某些词的重要度)
+>* 表达式分组
+>* 等.
+
+* 没有索引也可以执行,但是速度十分缓慢
+例子:
+```
+SELECT note_text
+FROM productnotes
+WHERE Match(note_text) Against('rabbit -rope*' IN BOOLEAN MODE);
+```
+![](pictures/布尔操作符.jpg)
+使用注意点:
+* 在布尔方式中，不按等级值降序排序返回的行。 
+* 在索引全文本数据时，短词被忽略且从索引中排除。短词定义为 那些具有3个或3个以下字符的词（如果需要，这个数目可以更改）。
+* MySQL带有一个内建的非用词（stopword）列表，这些词在索引全文本数据时总是被忽略。如果需要，可以覆盖这个列表（请参 阅MySQL文档以了解如何完成此工作）。 
+* 许多词出现的频率很高，搜索它们没有用处（返回太多的结果）。 因此，MySQL规定了一条50%规则，如果一个词出现在50%以上 的行中，则将它作为一个非用词忽略。50%规则不用于IN BOOLEAN MODE。
+*  如果表中的行数少于3行，则全文本搜索不返回结果（因为每个词 或者不出现，或者至少出现在50%的行中）。 
+* 忽略词中的单引号。例如，don't索引为dont
+* 不具有词分隔符（包括日语和汉语）的语言不能恰当地返回全文 本搜索结果
+## 19. 插入数据
+**使用`INSERT`语句进行插入**
+* 插入完整的行
+* 插入部分的行
+* 插入多行
+* 插入某些查询的结果
+### 插入完整的行
+`INSERT INTO table
+VALUES(
+    'value1',
+    'value2',
+    'value3',
+    NULL,
+);`
+* 各个列必须以他们在表中定义的顺序出现.
+
+安全方法:
+```
+INSERT INTO table(
+    colname1,
+    colname2,
+    colname3,
+    colname4,
+    colname5)
+VALUES(
+    value1,
+    value2,
+    value3,
+    value4,
+    value5);
+```
+* 列名的顺序可以交换,只要值对应即可
+### 插入多个行
+* 多个`INSERT`语句,以分号间隔,一次提交
+* 多个`VALUE`的括号,中间以`,`分割,
+### 插入检索出的数据
+*将`SELECT`结果`INSERT`进表中*
+例子:
+```
+INSERT INTO table(colname1,
+    colname2,
+    colname3,
+    colname4)
+SELECT colname1,
+    colname2,
+    colname3,
+    colname4
+FROM table2;
+```
+> 为简单起见，这个例子在INSERT和 SELECT语句中使用了相同的列名。但是，不一定要求列名匹配。 事实上，MySQL甚至不关心SELECT返回的列名。它使用的是 列的位置，因此SELECT中的第一列（不管其列名）将用来填充 表列中指定的第一个列，第二列将用来填充表列中指定的第二 个列，如此等等。这对于从使用不同列名的表中导入数据是非 常有用的。
+* `SELECT`语句中可以包含过滤语句
+## 20. 更新和删除数据
+**`UPDATE`和`DELETE`**
+### 更新数据
+* 更新特定**行**
+* 更新所有行
+
+组成部分:
+* 要更新的表
+* 列名和他们的新值
+* 确定要更新行的过滤条件.
+
+例如更新某个人的邮件地址:
+`UPDATE table SET colname = 'value' WHERE name = 'A';`
+* `SET`后可以跟多个行和要更新的值**列-值**对
+* `IGNORE`关键字,如果发生错误时,更新操作会被取消,而当不期望这些操作被取消时,在`UPDATE`后添加`IGNORE`关键词即可.
+* 没有办法删除某一行中的某一列值,顶多只有将其设置为`NULL`
+### 删除数据
+* 删除特定行
+* 删除所有行
+`DELETE FROM table WHERE p`,跟`UPDATE`相比多了`FROM`,
+> * 并不删除表本身.
+
+如果想要将数据全部删除,可以使用:
+`TRUECATE TABLE`,是删除原表然后建立一个同名新表.
+## 21. 创建和操纵表
+### CREATE TABLE
+需要给出的信息:
+* 新表的名字
+* 表中列的定义和定义
+
+![](pictures/表创建.jpg)
+关键字 `IF NOT EXISTS`加在表名后,检查是否已有表名.当不存在该表名时创建.
+* `NULL`代表无值或缺值.
+* **主键必须唯一**
+* 主键值可以多列,在`PRIMARY KEY`中用逗号分隔开即可.
+### AUTO_INCREMENT
+自增
+### 指定默认值:
+在创建表时,例如指定某一列:
+`colnamex type NULL/NOT NULL DEFAULT 3,`
+### 引擎类型:
+在创建表的列表项结尾处添加:`ENGINE=InnoDB`,
+* `InnoDB`:事务性引擎,不支持全文本搜索
+* `MEMORY`等同于`MyISAM`但是存储在内存中,速度很快(适用于临时表)
+* `MyISAM`性能高,支持全文本搜索,不支持事务处理.
+
+**外键不能跨引擎**
+### 更新(改)表
+使用`ALERT TABLE`语句.
+* `ALERT TABLE`后给出要更改的表名,必须已存在
+* 所做出的更改
+例如:`ALERT TABLE table ADD colname CHAR(20);`,`ALERT TABLE table DROP COLUMN colname;`
+### 删除表
+**`DROP TABLE`**`tablename`
+### 重命名表
+**`RENAME TABLE oldname TO newname;`**
+可以对多个表进行重命名,新旧名字对用逗号隔开.
+## 22. 使用视图
+视图类似于表,
+### 规则和限制
+* 唯一命名
+* 需要权限创建视图
+* 视图可以嵌套
+* 视图不能索引,也不能有关联的触发器或默认值
+### 使用视图
+* 使用`CREATE VIEW`进行创建
+* 使用`SHOW CREATE VIEW viewname`进行查看
+* 使用`DROP VIEW viewname`删除视图
+* 更新视图,先`DROP`再`CREATE`或者直接用`CREATE OR REPLACE VIEW`
+
+**利用视图简化复杂的联结**
+![](pictures/视图1.jpg)
+*相当于复用,创建别名.*
+**用视图重新格式化检索出的数**
+即,在`SELECT`中有一些需要改变格式的东西也可以存为视图
+**用视图进行过滤**
+相当于有过滤语句即`WHERE`的子句创建视图
+**使用视图和计算字段**
+### 更新视图
+基本上不太用于更新,通常只用于查询
+## 23. 使用存储过程
+**概念**什么是存储过程:**为以后的使用而保存的一条或多条MySQL语句的集合**
+*相当于一个封装的概念,或者是一个函数的概念,你只需要调用过程,传特定参数即可*
+例子:
+```
+CALL processname(@para1,
+                  @para2,
+                  @para3);
+```
+### 创建存储过程
+```
+CREATE PROCEDURE productpricing()
+BEGIN
+    SELECT Avg(prod_price) AS priceaverage
+    FROM products;
+END;
+```
+需要的参数将会在括号中写进去(如果需要参数的话)
+### 删除存储过程
+`DROP PROCEDURE procedurename;`存在该过程则删除,不存在则报错.       
+### 使用参数
+![](pictures/存储过程使用参数.jpg)
+关键字`OUT`指出相应的参数用来从存储过程传出一个值(返回给调用者)`MySQL`支持`IN`（传递给存储过程）、`OUT`（从存储过程传出，如这里所用）和`INOUT`（对存储过程传入和传出）类型的参数.
+使用:
+```
+CALL productpricing(@pricelow,
+                    @pricehigh,
+                    @priceaverage);
+```
+这条语句不返回结果,`@`标志表示为变量,而不是列名啥的
+如果要显示返回的结果的话:
+`SELECT @pricelow;`或者`SELECT @pricelow, @pricehigh, @priceaverage;`
+### 只能存储过程
+考虑这个场景。你需要获得与以前一样的订单合计，但需要对合计 增加营业税，不过只针对某些顾客（或许是你所在州中那些顾客）。那么， 你需要做下面几件事情： 
+* 获得合计（与以前一样）； 
+* 把营业税有条件地添加到合计；
+* 返回合计（带或不带税）。
+
+![](pictures/存储过程高级1.jpg)
+![](pictures/存储过程高级2.jpg)
+> `--`为注释,`DECLARE`定了两个局部变量,(好像没有定义全局变量的需要,因为全局变量就是传入的参数.),`COMMENT`关键字如果给出,其结果在`SHOW PROCEDURE STATUS`中显示.
+### 检查存储过程
+`SHOW CREATE PROCEDURE procedurename;`,比较搞不清楚为什么要加`CREATE`;
+为了获得包括何时、由谁创建等详细信息的存储过程列表，使用`SHOW PROCEDURE STATUS。`
+## 24. 游标
+**游标:** 需要在检索出来的行中前进或后退一行或多行。这就是使用游标的原因。
+使用游标四个步骤:
+* 创建游标
+* 打开游标
+* 对于填有数据的游标,根据需要取出各行
+* 结束游标使用时,关闭游标
+### 创建游标
+```
+CREATE PROCEDURE processorders()
+BEGIN 
+    DECLARE ordernumbers CURSOR
+    FOR
+    SELECT order_num FROM orders;
+END;
+```
+### 打开和关闭游标
+`OPEN ordernumbers;`
+`CLOSE ordernumbers;`
+### 使用游标
+***FETCH***
+![](pictures/使用游标.jpg)
+循环使用:
+![](pictures/使用游标2.jpg)
+上述代码夹杂在`OPEN`和`CLOSE`语句中间
